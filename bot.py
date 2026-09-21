@@ -1,16 +1,12 @@
 #!/usr/bin/env python3
+
 """
-USA News Hub Telegram Bot
+Germany News Hub Telegram Bot
 
-Парсит RSS-ленты главных новостей США (NBC, CBS, ABC, NPR), переводит на
-русский через Anthropic API, публикует в Telegram-канал с картинками
-(если есть в источнике). Это общий хаб-канал сети — здесь, в отличие от
-нишевых сателлитов (иммиграция, локальные города), фильтрация по теме
-намеренно широкая: цель — быстрый набор аудитории и разнообразный поток
-новостей, из которого дальше идёт переток трафика в тематические каналы.
-
-Запускается по расписанию (GitHub Actions cron), максимум MAX_POSTS_PER_RUN
-постов за запуск. Структура полностью повторяет la-news-bot / immigration-usa-bot.
+Парсит RSS-ленты политических новостей Германии (DW, ARD, ZDF, Deutschlandfunk), переводит на
+русский через Anthropic API (Claude). Публикация — через Telegram Bot API.
+Запускается по расписанию через GitHub Actions, без сервера.
+Это общий хаб-канал сети — здесь фильтрация сосредоточена на политических новостях Германии.
 """
 
 import os
@@ -26,12 +22,11 @@ import requests
 from anthropic import Anthropic
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
-log = logging.getLogger("usa-news-hub-bot")
+log = logging.getLogger("germany-news-hub-bot")
 
 # ---------------------------------------------------------------------------
 # Конфигурация
 # ---------------------------------------------------------------------------
-
 TELEGRAM_BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 TELEGRAM_CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
 ANTHROPIC_API_KEY = os.environ["ANTHROPIC_API_KEY"]
@@ -41,18 +36,17 @@ MIN_INTERVAL_MINUTES = int(os.environ.get("MIN_INTERVAL_MINUTES", "45"))
 MAX_INTERVAL_MINUTES = int(os.environ.get("MAX_INTERVAL_MINUTES", "120"))
 STATE_FILE = os.environ.get("STATE_FILE", "state/seen.json")
 
-CHANNEL_SIGNATURE = "🇺🇸 Новости США"
-CHANNEL_URL = os.environ.get("CHANNEL_URL", "https://t.me/UsaNewsmedia")
+CHANNEL_SIGNATURE = "🇩🇪 Новости Германии"
+CHANNEL_URL = os.environ.get("CHANNEL_URL", "https://t.me/GermanyNewsmedia")
 
-# Широкие источники главных новостей США — это хаб-канал, задача которого
-# быстро набрать подписчиков разнообразным потоком новостей, а не сузиться
-# до одной темы (в отличие от нишевых сателлитов сети).
+# Официальные немецкие источники политических новостей
 RSS_SOURCES = [
     {"name": "Deutsche Welle - Politik", "url": "https://www.dw.com/de/politik/s-8150"},
     {"name": "ARD Tagesschau", "url": "https://www.tagesschau.de/xml/rss2"},
     {"name": "ZDF Nachrichten", "url": "https://www.zdf.de/rss/zdf/nachrichten"},
     {"name": "Deutschlandfunk", "url": "https://www.deutschlandfunk.de/rss-podcast-nachrichtenleicht.2904.xml"},
 ]
+
 TELEGRAM_API = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
 anthropic_client = Anthropic(api_key=ANTHROPIC_API_KEY)
 
@@ -130,22 +124,28 @@ def fetch_candidates(state: dict) -> list:
         except Exception as e:
             log.warning(f"Не удалось загрузить {source['name']}: {e}")
             continue
+
         if feed.bozo and not feed.entries:
             log.warning(f"Лента {source['name']} вернула ошибку без записей, пропускаю")
             continue
+
         for entry in feed.entries[:10]:
             link = entry.get("link", "")
             title = entry.get("title", "").strip()
             summary = entry.get("summary", "") or entry.get("description", "")
             summary = strip_html(summary)[:800]
+
             if not link or not title:
                 continue
             if link in state["seen_links"]:
                 continue
+
             h = content_hash(title, summary)
             if h in state["seen_hashes"]:
                 continue
+
             image_url = extract_image(entry)
+
             candidates.append({
                 "source": source["name"],
                 "link": link,
@@ -155,14 +155,15 @@ def fetch_candidates(state: dict) -> list:
                 "hash": h,
                 "published": entry.get("published", ""),
             })
+
     candidates.sort(key=lambda c: c["published"], reverse=True)
     return candidates
 
 
 def rewrite_in_russian(title: str, summary: str, source_name: str):
-    prompt = f"""Ты редактор общего Telegram-канала главных новостей США на русском языке.
+    prompt = f"""Ты редактор Telegram-канала политических новостей Германии на русском языке.
 
-Вот новость на английском (источник: {source_name}):
+Вот новость на немецком (источник: {source_name}):
 
 Заголовок: {title}
 Описание: {summary}
@@ -170,12 +171,14 @@ def rewrite_in_russian(title: str, summary: str, source_name: str):
 Переведи и оформи это как короткий пост для Telegram на русском языке:
 - Заголовок с эмодзи по теме (1 эмодзи), выделенный жирным (Telegram Markdown: *текст*)
 - 2-4 предложения по существу, нейтральный новостной тон, никакой "воды"
+- Фокус на политических аспектах события
 - НЕ упоминай название источника и НЕ добавляй ссылки на источник в текст
 - НЕ добавляй хэштеги
 - НЕ добавляй никакую подпись/подвал — это будет добавлено отдельно
 - Пиши только сам текст поста, без пояснений от себя, без кавычек вокруг всего текста
 
 Ответь только готовым текстом поста."""
+
     try:
         response = anthropic_client.messages.create(
             model="claude-sonnet-4-6",
@@ -210,6 +213,7 @@ def send_to_telegram(text: str, image_url) -> bool:
             if resp.ok and resp.json().get("ok"):
                 return True
             log.warning(f"sendPhoto не удался ({resp.text[:200]}), пробую без картинки")
+
         resp = requests.post(
             f"{TELEGRAM_API}/sendMessage",
             data={
@@ -230,7 +234,7 @@ def send_to_telegram(text: str, image_url) -> bool:
 
 
 def main():
-    log.info("Запуск USA News Hub Bot")
+    log.info("Запуск Germany News Hub Bot")
     state = load_state()
 
     if is_too_early(state):
@@ -249,13 +253,17 @@ def main():
     for item in candidates:
         if posted >= MAX_POSTS_PER_RUN:
             break
+
         log.info(f"Обрабатываю: [{item['source']}] {item['title'][:80]}")
+
         body = rewrite_in_russian(item["title"], item["summary"], item["source"])
         if not body:
             log.warning("Не удалось переписать текст, пропускаю эту новость")
             continue
+
         final_text = build_final_text(body)
         success = send_to_telegram(final_text, item["image_url"])
+
         if success:
             log.info("Опубликовано успешно")
             state["seen_links"].append(item["link"])
