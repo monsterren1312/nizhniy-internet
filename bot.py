@@ -48,12 +48,11 @@ CHANNEL_URL = os.environ.get("CHANNEL_URL", "https://t.me/UsaNewsmedia")
 # быстро набрать подписчиков разнообразным потоком новостей, а не сузиться
 # до одной темы (в отличие от нишевых сателлитов сети).
 RSS_SOURCES = [
-    {"name": "NBC News", "url": "https://feeds.nbcnews.com/nbcnews/public/news"},
-    {"name": "CBS News", "url": "https://www.cbsnews.com/latest/rss/us"},
-    {"name": "ABC News", "url": "https://feeds.abcnews.com/abcnews/usheadlines"},
-    {"name": "NPR", "url": "https://feeds.npr.org/1001/rss.xml"},
+    {"name": "Deutsche Welle - Politik", "url": "https://www.dw.com/de/politik/s-8150"},
+    {"name": "ARD Tagesschau", "url": "https://www.tagesschau.de/xml/rss2"},
+    {"name": "ZDF Nachrichten", "url": "https://www.zdf.de/rss/zdf/nachrichten"},
+    {"name": "Deutschlandfunk", "url": "https://www.deutschlandfunk.de/rss-podcast-nachrichtenleicht.2904.xml"},
 ]
-
 TELEGRAM_API = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
 anthropic_client = Anthropic(api_key=ANTHROPIC_API_KEY)
 
