@@ -3,10 +3,9 @@
 """
 Germany News Hub Telegram Bot
 
-Парсит RSS-ленты политических новостей Германии (DW, ARD, ZDF, Deutschlandfunk), переводит на
-русский через Anthropic API (Claude). Публикация — через Telegram Bot API.
+Парсит RSS-ленты политических новостей Германии (Tagesschau, Deutschlandfunk, ZDF, Süddeutsche Zeitung),
+переводит на русский через Anthropic API (Claude). Публикация — через Telegram Bot API.
 Запускается по расписанию через GitHub Actions, без сервера.
-Это общий хаб-канал сети — здесь фильтрация сосредоточена на политических новостях Германии.
 """
 
 import os
@@ -39,12 +38,12 @@ STATE_FILE = os.environ.get("STATE_FILE", "state/seen.json")
 CHANNEL_SIGNATURE = "🇩🇪 Новости Германии"
 CHANNEL_URL = os.environ.get("CHANNEL_URL", "https://t.me/GermanyNewsmedia")
 
-# Официальные немецкие источники политических новостей
+# Официальные немецкие источники политических новостей (проверенные рабочие RSS-ленты)
 RSS_SOURCES = [
-    {"name": "Deutsche Welle - Politik", "url": "https://www.dw.com/de/politik/s-8150"},
-    {"name": "ARD Tagesschau", "url": "https://www.tagesschau.de/xml/rss2"},
-    {"name": "ZDF Nachrichten", "url": "https://www.zdf.de/rss/zdf/nachrichten"},
-    {"name": "Deutschlandfunk", "url": "https://www.deutschlandfunk.de/rss-podcast-nachrichtenleicht.2904.xml"},
+    {"name": "ARD Tagesschau - Inland", "url": "https://www.tagesschau.de/inland/index~rss2.xml"},
+    {"name": "Deutschlandfunk - Politik", "url": "https://www.deutschlandfunk.de/politikportal-100.rss"},
+    {"name": "ZDF - Politik", "url": "https://www.zdf.de/rss/zdf/nachrichten/politik"},
+    {"name": "Süddeutsche Zeitung - Politik", "url": "https://rss.sueddeutsche.de/rss/Politik"},
 ]
 
 TELEGRAM_API = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
