@@ -143,6 +143,22 @@ def fetch_candidates(state: dict) -> list:
             if h in state["seen_hashes"]:
                 continue
 
+            title_lower = title.lower()
+            summary_lower = summary.lower()
+            combined = title_lower + " " + summary_lower
+
+            POLITICAL_KEYWORDS = [
+                                "bundestag", "bundesrat", "regierung", "kanzler", "minister",
+                                "partei", "wahl", "koalition", "spd", "cdu", "csu", "afd",
+                                "grüne", "linke", "fdp", "gesetz", "reform", "politik",
+                                "außenpolitik", "innenpolitik", "abstimmung", "opposition",
+                                "bundeswehr", "nato", "sanktionen", "diplomat", "botschaft",
+                                "russland", "ukraine", "eu-kommission", "brüssel",
+            ]
+
+            if not any(keyword in combined for keyword in POLITICAL_KEYWORDS):
+                                continue
+                
             image_url = extract_image(entry)
 
             candidates.append({
