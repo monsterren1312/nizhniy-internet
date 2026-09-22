@@ -1,4 +1,4 @@
-name: USA News Hub Autoposter
+name: Автопостер
 
 on:
   schedule:
