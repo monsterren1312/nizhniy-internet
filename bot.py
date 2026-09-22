@@ -148,12 +148,24 @@ def fetch_candidates(state: dict) -> list:
             combined = title_lower + " " + summary_lower
 
             POLITICAL_KEYWORDS = [
-                                "bundestag", "bundesrat", "regierung", "kanzler", "minister",
-                                "partei", "wahl", "koalition", "spd", "cdu", "csu", "afd",
-                                "grüne", "linke", "fdp", "gesetz", "reform", "politik",
-                                "außenpolitik", "innenpolitik", "abstimmung", "opposition",
-                                "bundeswehr", "nato", "sanktionen", "diplomat", "botschaft",
-                                "russland", "ukraine", "eu-kommission", "brüssel",
+                "bundestag", "bundesrat", "regierung", "kanzler", "kanzleramt",
+                                "minister", "ministerium", "staatssekret", "behörde",
+                                "partei", "spd", "cdu", "csu", "afd", "grüne", "linke", "fdp",
+                                "bsw", "koalition", "fraktion", "opposition",
+                                "wahl", "wähler", "abstimmung", "umfrage", "landtag",
+                                "gesetz", "reform", "verordnung", "bundesverfassungsgericht",
+                                "politik", "innenpolitik", "außenpolitik", "sicherheitspolitik",
+                                "diplomat", "botschaft", "gipfel", "verhandlung", "abkommen",
+                                "sanktion", "handel", "handelspolitik", "zoll", "export",
+                                "import", "wirtschaftspolitik", "haushalt", "steuer",
+                                "subvention", "industriepolitik", "energiepolitik", "energie",
+                                "klimapolitik", "migration", "asyl", "abschiebung",
+                                "grenzschutz", "bundeswehr", "verteidigung", "rüstung",
+                                "nato", "eu-kommission", "europäische union", "brüssel",
+                                "russland", "ukraine", "china", "usa", "krieg", "konflikt",
+                                "krise", "protest", "demonstration", "streik", "korruption",
+                                "skandal", "ermittlung", "prozess", "urteil", "verfassung",
+                                "rente", "gesundheitspolitik", "bürgergeld", "arbeitsmarkt",
             ]
 
             if not any(keyword in combined for keyword in POLITICAL_KEYWORDS):
