@@ -1,336 +1,350 @@
 #!/usr/bin/env python3
-
 """
-Germany News Hub Telegram Bot
+Нижний интернет — бот видео-канала с ручным одобрением.
 
-Парсит RSS-ленты политических новостей Германии (Tagesschau, Deutschlandfunk, ZDF, Süddeutsche Zeitung),
-переводит на русский через Anthropic API (Claude). Публикация — через Telegram Bot API.
-Запускается по расписанию через GitHub Actions, без сервера.
+Каждый запуск (GitHub Actions, раз в 15 минут):
+1. Читает нажатия кнопок ✅/❌ в личке админа и обновляет очередь.
+2. Если пора — публикует следующее одобренное видео в канал.
+3. Если кандидатов на проверке мало — берёт свежие вирусные видео с Reddit,
+   Claude отбирает самые дикие и пишет подпись, бот присылает их админу на одобрение.
 """
 
 import os
+import re
 import json
 import time
-import random
-import hashlib
+import glob
 import logging
+import subprocess
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 
-import feedparser
 import requests
 from anthropic import Anthropic
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
-log = logging.getLogger("germany-news-hub-bot")
+log = logging.getLogger("nizhniy-internet")
 
 # ---------------------------------------------------------------------------
 # Конфигурация
 # ---------------------------------------------------------------------------
-TELEGRAM_BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
-TELEGRAM_CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
-ANTHROPIC_API_KEY = os.environ["ANTHROPIC_API_KEY"]
+BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"].strip()
+CHANNEL_ID = os.environ["TELEGRAM_CHAT_ID"].strip()
+ADMIN_CHAT_ID = int(os.environ["ADMIN_CHAT_ID"].strip())
+ANTHROPIC_API_KEY = os.environ["ANTHROPIC_API_KEY"].strip()
 
-MAX_POSTS_PER_RUN = int(os.environ.get("MAX_POSTS_PER_RUN", "1"))
-MIN_INTERVAL_MINUTES = int(os.environ.get("MIN_INTERVAL_MINUTES", "45"))
-MAX_INTERVAL_MINUTES = int(os.environ.get("MAX_INTERVAL_MINUTES", "120"))
-STATE_FILE = os.environ.get("STATE_FILE", "state/seen.json")
-
-CHANNEL_SIGNATURE = "🇩🇪 Новости Германии"
-CHANNEL_URL = os.environ.get("CHANNEL_URL", "https://t.me/GermanyNewsmedia")
-
-# Официальные немецкие источники политических новостей (проверенные рабочие RSS-ленты)
-RSS_SOURCES = [
-    {"name": "ARD Tagesschau - Inland", "url": "https://www.tagesschau.de/inland/index~rss2.xml"},
-    {"name": "Deutschlandfunk - Politik", "url": "https://www.deutschlandfunk.de/politikportal-100.rss"},
-    {"name": "ZDF - Politik", "url": "https://www.zdf.de/rss/zdf/nachrichten/politik"},
-    {"name": "Süddeutsche Zeitung - Politik", "url": "https://rss.sueddeutsche.de/rss/Politik"},
+SUBREDDITS = [
+    "WTF", "PublicFreakout", "Unexpected", "instant_regret", "interestingasfuck",
+    "nextfuckinglevel", "Whatcouldgowrong", "therewasanattempt", "IdiotsInCars",
+    "oddlyterrifying", "holdmybeer", "BeAmazed",
 ]
 
-TELEGRAM_API = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
-anthropic_client = Anthropic(api_key=ANTHROPIC_API_KEY)
+MAX_PENDING = 5            # сколько видео одновременно ждут вашего решения
+MAX_CANDIDATES_PER_DAY = 15
+MAX_POSTS_PER_DAY = 6
+MIN_GAP_MINUTES = 90       # минимум между постами в канале
+POST_HOURS = (9, 23)       # публикуем с 9:00 до 23:00 по Германии
+MAX_DURATION_SEC = 120
+MAX_FILE_MB = 48           # лимит Telegram Bot API — 50 МБ
+
+STATE_FILE = "state/state.json"
+TG = f"https://api.telegram.org/bot{BOT_TOKEN}"
+UA = "Mozilla/5.0 (X11; Linux x86_64) nizhniy-internet/1.0"
+
+claude = Anthropic(api_key=ANTHROPIC_API_KEY)
 
 
+# ---------------------------------------------------------------------------
+# Состояние
+# ---------------------------------------------------------------------------
 def load_state() -> dict:
-    if not os.path.exists(STATE_FILE):
-        return {"seen_hashes": [], "seen_links": [], "next_post_not_before": None}
-    with open(STATE_FILE, "r", encoding="utf-8") as f:
-        state = json.load(f)
-    state.setdefault("next_post_not_before", None)
+    state = {}
+    if os.path.exists(STATE_FILE):
+        with open(STATE_FILE, encoding="utf-8") as f:
+            state = json.load(f)
+    state.setdefault("offset", 0)
+    state.setdefault("seen", [])
+    state.setdefault("pending", {})     # id -> кандидат на проверке
+    state.setdefault("queue", [])       # одобренные, ждут публикации
+    state.setdefault("day", None)
+    state.setdefault("posts_today", 0)
+    state.setdefault("candidates_today", 0)
+    state.setdefault("last_post_ts", 0)
     return state
 
 
 def save_state(state: dict) -> None:
-    os.makedirs(os.path.dirname(STATE_FILE), exist_ok=True)
-    state["seen_hashes"] = state["seen_hashes"][-500:]
-    state["seen_links"] = state["seen_links"][-500:]
+    os.makedirs("state", exist_ok=True)
+    state["seen"] = state["seen"][-1500:]
     with open(STATE_FILE, "w", encoding="utf-8") as f:
         json.dump(state, f, ensure_ascii=False, indent=2)
 
 
-def schedule_next_post(state: dict) -> None:
-    delay_minutes = random.uniform(MIN_INTERVAL_MINUTES, MAX_INTERVAL_MINUTES)
-    next_time = datetime.now(timezone.utc).timestamp() + delay_minutes * 60
-    state["next_post_not_before"] = next_time
-    log.info(f"Следующий пост не раньше чем через {delay_minutes:.1f} мин")
+def berlin_now() -> datetime:
+    return datetime.now(ZoneInfo("Europe/Berlin"))
 
 
-def is_too_early(state: dict) -> bool:
-    not_before = state.get("next_post_not_before")
-    if not_before is None:
-        return False
-    return datetime.now(timezone.utc).timestamp() < not_before
+def roll_day(state: dict) -> None:
+    today = berlin_now().strftime("%Y-%m-%d")
+    if state["day"] != today:
+        state["day"] = today
+        state["posts_today"] = 0
+        state["candidates_today"] = 0
 
 
-def content_hash(title: str, summary: str) -> str:
-    normalized = (title + summary).lower().strip()
-    normalized = "".join(ch for ch in normalized if ch.isalnum() or ch.isspace())
-    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+# ---------------------------------------------------------------------------
+# Telegram
+# ---------------------------------------------------------------------------
+def tg(method: str, **params):
+    r = requests.post(f"{TG}/{method}", json=params, timeout=60)
+    data = r.json()
+    if not data.get("ok"):
+        log.warning(f"Telegram {method}: {data}")
+    return data
 
 
-def strip_html(text: str) -> str:
-    import re
-    text = re.sub(r"<[^>]+>", " ", text)
-    text = re.sub(r"\s+", " ", text)
-    return text.strip()
+def keyboard(cid: str) -> dict:
+    return {"inline_keyboard": [[
+        {"text": "✅ Опубликовать", "callback_data": f"ok:{cid}"},
+        {"text": "❌ Пропустить", "callback_data": f"no:{cid}"},
+    ]]}
 
 
-def extract_image(entry):
-    if "media_content" in entry and entry.media_content:
-        url = entry.media_content[0].get("url")
-        if url:
-            return url
-    if "media_thumbnail" in entry and entry.media_thumbnail:
-        url = entry.media_thumbnail[0].get("url")
-        if url:
-            return url
-    if "links" in entry:
-        for link in entry.links:
-            if link.get("type", "").startswith("image/"):
-                return link.get("href")
-    if "summary" in entry:
-        import re
-        match = re.search(r'<img[^>]+src="([^"]+)"', entry.summary)
-        if match:
-            return match.group(1)
-    return None
+def process_updates(state: dict) -> None:
+    data = tg("getUpdates", offset=state["offset"], timeout=0,
+              allowed_updates=["callback_query", "message"])
+    for upd in data.get("result", []):
+        state["offset"] = upd["update_id"] + 1
 
-
-def fetch_candidates(state: dict) -> list:
-    candidates = []
-    for source in RSS_SOURCES:
-        try:
-            feed = feedparser.parse(source["url"])
-        except Exception as e:
-            log.warning(f"Не удалось загрузить {source['name']}: {e}")
+        msg = upd.get("message")
+        if msg and msg.get("chat", {}).get("id") == ADMIN_CHAT_ID:
+            text = (msg.get("text") or "").strip()
+            if text.startswith("/start") or text.startswith("/status"):
+                tg("sendMessage", chat_id=ADMIN_CHAT_ID, text=(
+                    f"🔻 Нижний интернет — статус\n"
+                    f"На проверке: {len(state['pending'])}\n"
+                    f"В очереди на публикацию: {len(state['queue'])}\n"
+                    f"Опубликовано сегодня: {state['posts_today']}/{MAX_POSTS_PER_DAY}"))
             continue
 
-        if feed.bozo and not feed.entries:
-            log.warning(f"Лента {source['name']} вернула ошибку без записей, пропускаю")
+        cq = upd.get("callback_query")
+        if not cq:
+            continue
+        if cq.get("from", {}).get("id") != ADMIN_CHAT_ID:
+            tg("answerCallbackQuery", callback_query_id=cq["id"], text="Нет доступа")
             continue
 
-        for entry in feed.entries[:10]:
-            link = entry.get("link", "")
-            title = entry.get("title", "").strip()
-            summary = entry.get("summary", "") or entry.get("description", "")
-            summary = strip_html(summary)[:800]
+        action, _, cid = (cq.get("data") or "").partition(":")
+        item = state["pending"].pop(cid, None)
+        chat_id = cq["message"]["chat"]["id"]
+        message_id = cq["message"]["message_id"]
 
-            if not link or not title:
-                continue
-            if link in state["seen_links"]:
-                continue
-
-            h = content_hash(title, summary)
-            if h in state["seen_hashes"]:
-                continue
-
-            title_lower = title.lower()
-            summary_lower = summary.lower()
-            combined = title_lower + " " + summary_lower
-
-            POLITICAL_KEYWORDS = [
-                "bundestag", "bundesrat", "regierung", "kanzler", "kanzleramt",
-                                "minister", "ministerium", "staatssekret", "behörde",
-                                "partei", "spd", "cdu", "csu", "afd", "grüne", "linke", "fdp",
-                                "bsw", "koalition", "fraktion", "opposition",
-                                "wahl", "wähler", "abstimmung", "umfrage", "landtag",
-                                "gesetz", "reform", "verordnung", "bundesverfassungsgericht",
-                                "politik", "innenpolitik", "außenpolitik", "sicherheitspolitik",
-                                "diplomat", "botschaft", "gipfel", "verhandlung", "abkommen",
-                                "sanktion", "handel", "handelspolitik", "zoll", "export",
-                                "import", "wirtschaftspolitik", "haushalt", "steuer",
-                                "subvention", "industriepolitik", "energiepolitik", "energie",
-                                "klimapolitik", "migration", "asyl", "abschiebung",
-                                "grenzschutz", "bundeswehr", "verteidigung", "rüstung",
-                                "nato", "eu-kommission", "europäische union", "brüssel",
-                                "russland", "ukraine", "china", "usa", "krieg", "konflikt",
-                                "krise", "protest", "demonstration", "streik", "korruption",
-                                "skandal", "ermittlung", "prozess", "urteil", "verfassung",
-                                "rente", "gesundheitspolitik", "bürgergeld", "arbeitsmarkt",
-            ]
-
-            if not any(keyword in combined for keyword in POLITICAL_KEYWORDS):
-                                continue
-                
-            image_url = extract_image(entry)
-
-            candidates.append({
-                "source": source["name"],
-                "link": link,
-                "title": title,
-                "summary": summary,
-                "image_url": image_url,
-                "hash": h,
-                "published": entry.get("published", ""),
-            })
-
-    candidates.sort(key=lambda c: c["published"], reverse=True)
-    return candidates
-
-
-def rewrite_in_russian(title: str, summary: str, source_name: str):
-    prompt = f"""Ты редактор Telegram-канала политических новостей Германии на русском языке.
-
-СНАЧАЛА реши, подходит ли новость каналу.
-Публикуем ТОЛЬКО: внутреннюю и внешнюю политику Германии, федеральное правительство и министров,
-Бундестаг и Бундесрат, земельные парламенты и правительства, партии, выборы, законы и реформы,
-миграцию и убежище, бюджет, налоги и экономическую политику, оборону и Бундесвер,
-позицию и участие Германии в ЕС, НАТО и мировой политике.
-НЕ публикуем: спорт, погоду, криминал, ДТП, пожары и происшествия без политического значения,
-культуру, кино, музыку, шоу-бизнес, лайфстайл, здоровье и науку без политического решения,
-новости других стран, если в них нет прямой связи с Германией или её политикой.
-Если новость НЕ подходит — ответь ровно одним словом: SKIP
-Если подходит — выполни задание ниже.
-
-Вот новость на немецком (источник: {source_name}):
-
-Заголовок: {title}
-Описание: {summary}
-
-Переведи и оформи это как короткий пост для Telegram на русском языке:
-- Заголовок с ОДНИМ эмодзи по теме, выделенный жирным (Telegram Markdown: *текст*). Выбери эмодзи строго по таблице ниже, по теме, наиболее подходящей к сути новости:
-  🏛 — правительство, Бундестаг, законы (заседания, законопроекты, решения кабинета министров)
-  🗳 — выборы, партии (голосования, опросы, партийные съезды)
-  🌍 — внешняя политика, ЕС (дипломатия, саммиты, отношения с другими странами)
-  ⚖️ — суды, право (судебные решения, конституционные вопросы)
-  💶 — экономическая политика (бюджет, налоги, экономические реформы)
-  🚨 — срочные/важные новости (экстренные события, кризисы)
-  🛡 — оборона, безопасность (Бундесвер, НАТО, вопросы безопасности)
-  🧭 — миграция (миграционная политика)
-  Если новость не подходит ни под одну тему из таблицы — используй 🇩🇪.
-- 2-4 предложения по существу, нейтральный новостной тон, никакой "воды"
-- Фокус на политических аспектах события
-- НЕ упоминай название источника и НЕ добавляй ссылки на источник в текст
-- НЕ добавляй хэштеги
-- НЕ добавляй никакую подпись/подвал — это будет добавлено отдельно
-- Пиши только сам текст поста, без пояснений от себя, без кавычек вокруг всего текста
-
-Ответь только готовым текстом поста."""
-
-    try:
-        response = anthropic_client.messages.create(
-            model="claude-sonnet-5",
-            max_tokens=500,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        text = "".join(block.text for block in response.content if hasattr(block, "text")).strip()
-        return text if text else None
-    except Exception as e:
-        log.error(f"Ошибка при обращении к Anthropic API: {e}")
-        return None
-
-
-def build_final_text(body: str) -> str:
-    signature = f"[{CHANNEL_SIGNATURE}]({CHANNEL_URL})"
-    return f"{body}\n\n{signature}"
-
-
-def send_to_telegram(text: str, image_url) -> bool:
-    try:
-        if image_url:
-            resp = requests.post(
-                f"{TELEGRAM_API}/sendPhoto",
-                data={
-                    "chat_id": TELEGRAM_CHAT_ID,
-                    "photo": image_url,
-                    "caption": text,
-                    "parse_mode": "Markdown",
-                },
-                timeout=30,
-            )
-            if resp.ok and resp.json().get("ok"):
-                return True
-            log.warning(f"sendPhoto не удался ({resp.text[:200]}), пробую без картинки")
-
-        resp = requests.post(
-            f"{TELEGRAM_API}/sendMessage",
-            data={
-                "chat_id": TELEGRAM_CHAT_ID,
-                "text": text,
-                "parse_mode": "Markdown",
-                "disable_web_page_preview": True,
-            },
-            timeout=30,
-        )
-        if resp.ok and resp.json().get("ok"):
-            return True
-        log.error(f"sendMessage не удался: {resp.text[:300]}")
-        return False
-    except Exception as e:
-        log.error(f"Ошибка при отправке в Telegram: {e}")
-        return False
-
-
-def main():
-    log.info("Запуск Germany News Hub Bot")
-    state = load_state()
-
-    if is_too_early(state):
-        remaining = (state["next_post_not_before"] - datetime.now(timezone.utc).timestamp()) / 60
-        log.info(f"Ещё не время для следующего поста (осталось ~{remaining:.1f} мин), завершение без публикации")
-        return
-
-    candidates = fetch_candidates(state)
-    log.info(f"Найдено {len(candidates)} новых кандидатов из {len(RSS_SOURCES)} источников")
-
-    if not candidates:
-        log.info("Новых новостей нет, завершение")
-        return
-
-    posted = 0
-    for item in candidates:
-        if posted >= MAX_POSTS_PER_RUN:
-            break
-
-        log.info(f"Обрабатываю: [{item['source']}] {item['title'][:80]}")
-
-        body = rewrite_in_russian(item["title"], item["summary"], item["source"])
-        if not body:
-            log.warning("Не удалось переписать текст, пропускаю эту новость")
+        if not item:
+            tg("answerCallbackQuery", callback_query_id=cq["id"], text="Уже обработано")
             continue
-
-        if body.strip().strip("*").strip().upper().startswith("SKIP"):
-            log.info("Не по теме канала, пропускаю и запоминаю")
-            state["seen_links"].append(item["link"])
-            state["seen_hashes"].append(item["hash"])
-            save_state(state)
-            continue
-
-        final_text = build_final_text(body)
-        success = send_to_telegram(final_text, item["image_url"])
-
-        if success:
-            log.info("Опубликовано успешно")
-            state["seen_links"].append(item["link"])
-            state["seen_hashes"].append(item["hash"])
-            posted += 1
-            schedule_next_post(state)
-            save_state(state)
-            if posted < MAX_POSTS_PER_RUN:
-                time.sleep(5)
+        if action == "ok":
+            state["queue"].append(item)
+            label = f"✅ В очереди ({len(state['queue'])})"
+            log.info(f"Одобрено: {item['title'][:70]}")
         else:
-            log.error("Публикация не удалась, эта новость будет предложена повторно в следующий раз")
+            label = "❌ Пропущено"
+            log.info(f"Отклонено: {item['title'][:70]}")
+        tg("answerCallbackQuery", callback_query_id=cq["id"], text=label)
+        tg("editMessageReplyMarkup", chat_id=chat_id, message_id=message_id,
+           reply_markup={"inline_keyboard": [[{"text": label, "callback_data": "noop:0"}]]})
 
-    log.info(f"Готово. Опубликовано постов за этот запуск: {posted}")
+
+# ---------------------------------------------------------------------------
+# Публикация
+# ---------------------------------------------------------------------------
+def maybe_publish(state: dict) -> None:
+    if not state["queue"]:
+        return
+    now = berlin_now()
+    if not (POST_HOURS[0] <= now.hour < POST_HOURS[1]):
+        return
+    if state["posts_today"] >= MAX_POSTS_PER_DAY:
+        return
+    if time.time() - state["last_post_ts"] < MIN_GAP_MINUTES * 60:
+        return
+
+    item = state["queue"][0]
+    res = tg("sendVideo", chat_id=CHANNEL_ID, video=item["file_id"],
+             caption=item["caption"], supports_streaming=True)
+    if res.get("ok"):
+        state["queue"].pop(0)
+        state["posts_today"] += 1
+        state["last_post_ts"] = time.time()
+        log.info(f"Опубликовано в канал: {item['title'][:70]}")
+    else:
+        # файл больше недоступен — выкидываем, чтобы не застрять
+        state["queue"].pop(0)
+        log.error("Не удалось опубликовать, видео убрано из очереди")
+
+
+# ---------------------------------------------------------------------------
+# Reddit
+# ---------------------------------------------------------------------------
+def fetch_reddit(state: dict) -> list:
+    out = []
+    for sub in SUBREDDITS:
+        try:
+            r = requests.get(f"https://www.reddit.com/r/{sub}/top.json",
+                             params={"t": "day", "limit": 25},
+                             headers={"User-Agent": UA}, timeout=30)
+            if r.status_code != 200:
+                log.warning(f"r/{sub}: HTTP {r.status_code}")
+                continue
+            posts = r.json()["data"]["children"]
+        except Exception as e:
+            log.warning(f"r/{sub}: {e}")
+            continue
+
+        for p in posts:
+            d = p["data"]
+            rv = (d.get("media") or {}).get("reddit_video") or {}
+            if not d.get("is_video") or not rv:
+                continue
+            if d.get("over_18") or d["id"] in state["seen"]:
+                continue
+            if rv.get("duration", 999) > MAX_DURATION_SEC:
+                continue
+            out.append({
+                "id": d["id"],
+                "sub": sub,
+                "title": d.get("title", ""),
+                "score": d.get("score", 0),
+                "url": d.get("url_overridden_by_dest") or f"https://v.redd.it/{d['id']}",
+                "permalink": "https://www.reddit.com" + d.get("permalink", ""),
+            })
+        time.sleep(1)
+    out.sort(key=lambda x: x["score"], reverse=True)
+    log.info(f"Reddit: найдено {len(out)} новых видео")
+    return out[:40]
+
+
+def pick_and_caption(cands: list, n: int) -> list:
+    lines = "\n".join(f"{i}. [r/{c['sub']}, {c['score']}↑] {c['title']}" for i, c in enumerate(cands))
+    prompt = f"""Ты редактор русскоязычного Telegram-канала «Нижний интернет» — самые дикие,
+странные и безумные видео интернета. Ниже заголовки вирусных видео с Reddit.
+
+Выбери до {n} лучших: неожиданные, абсурдные, «как так вообще», эпичные фейлы,
+безумные совпадения, невероятные навыки, странные люди и ситуации.
+
+СТРОГО НЕ БЕРИ: смерть, тяжёлые травмы, кровь, жестокость к животным, насилие над детьми,
+сексуальный контент, издевательства над беззащитными людьми, всё, что снято в Германии.
+
+Для каждого выбранного напиши подпись на русском:
+- 1-2 короткие строки, цепляющие, с долей сарказма, как пишет живой человек
+- можно одно эмодзи
+- не выдумывай факты, которых нет в заголовке
+- без хэштегов и ссылок
+
+Ответь ТОЛЬКО JSON без пояснений:
+{{"picks": [{{"i": 0, "caption": "..."}}]}}
+
+Видео:
+{lines}"""
+    try:
+        resp = claude.messages.create(model="claude-sonnet-5", max_tokens=1200,
+                                      messages=[{"role": "user", "content": prompt}])
+        raw = "".join(b.text for b in resp.content if hasattr(b, "text"))
+        raw = raw[raw.find("{"): raw.rfind("}") + 1]
+        picks = json.loads(raw)["picks"]
+    except Exception as e:
+        log.error(f"Claude не смог выбрать видео: {e}")
+        return []
+    result = []
+    for p in picks:
+        i = p.get("i")
+        if isinstance(i, int) and 0 <= i < len(cands):
+            c = dict(cands[i])
+            c["caption"] = (p.get("caption") or "").strip() + "\n\n🔻 Нижний интернет"
+            result.append(c)
+    return result[:n]
+
+
+def download(url: str, vid: str):
+    os.makedirs("tmp", exist_ok=True)
+    out = f"tmp/{vid}.%(ext)s"
+    cmd = ["yt-dlp", "-q", "--no-playlist",
+           "-f", "bv*[height<=720]+ba/b[height<=720]/bv*+ba/b",
+           "--merge-output-format", "mp4",
+           "--max-filesize", f"{MAX_FILE_MB}M",
+           "-o", out, url]
+    try:
+        subprocess.run(cmd, check=True, timeout=180)
+    except Exception as e:
+        log.warning(f"Не удалось скачать {url}: {e}")
+        return None
+    files = glob.glob(f"tmp/{vid}.*")
+    files = [f for f in files if f.endswith(".mp4")]
+    if not files or os.path.getsize(files[0]) > MAX_FILE_MB * 1024 * 1024:
+        return None
+    return files[0]
+
+
+def expire_pending(state: dict) -> None:
+    """Если видео висит без ответа больше суток — убираем, чтобы не забивать очередь."""
+    for cid in list(state["pending"]):
+        if time.time() - state["pending"][cid].get("ts", 0) > 24 * 3600:
+            state["pending"].pop(cid)
+
+
+def send_for_review(state: dict) -> None:
+    expire_pending(state)
+    need = MAX_PENDING - len(state["pending"])
+    left_today = MAX_CANDIDATES_PER_DAY - state["candidates_today"]
+    n = min(need, left_today, 3)
+    if n <= 0:
+        return
+
+    cands = fetch_reddit(state)
+    if not cands:
+        return
+    picks = pick_and_caption(cands, n)
+    for c in cands:  # всё просмотренное помечаем, чтобы не предлагать повторно
+        state["seen"].append(c["id"])
+
+    for c in picks:
+        path = download(c["url"], c["id"])
+        if not path:
+            continue
+        caption = f"{c['caption']}\n\n— r/{c['sub']} · {c['score']}↑\n{c['permalink']}"
+        with open(path, "rb") as f:
+            r = requests.post(f"{TG}/sendVideo", data={
+                "chat_id": ADMIN_CHAT_ID,
+                "caption": caption[:1000],
+                "supports_streaming": "true",
+                "reply_markup": json.dumps(keyboard(c["id"])),
+            }, files={"video": f}, timeout=180).json()
+        os.remove(path)
+        if not r.get("ok"):
+            log.warning(f"Не отправилось на проверку: {r}")
+            continue
+        c["file_id"] = r["result"]["video"]["file_id"]
+        c["ts"] = time.time()
+        state["pending"][c["id"]] = c
+        state["candidates_today"] += 1
+        log.info(f"На проверку: {c['title'][:70]}")
+
+
+# ---------------------------------------------------------------------------
+def main():
+    state = load_state()
+    roll_day(state)
+
+    process_updates(state)
+    save_state(state)
+
+    maybe_publish(state)
+    save_state(state)
+
+    send_for_review(state)
+    save_state(state)
+
+    log.info(f"Готово. На проверке: {len(state['pending'])}, в очереди: {len(state['queue'])}, "
+             f"опубликовано сегодня: {state['posts_today']}")
 
 
 if __name__ == "__main__":
