@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """GTA 6 News Telegram Bot: t.me/s scraping -> Claude rewrite -> Telegram."""
-import os, re, json, time, random, hashlib, logging
+import os, re, json, time, random, hashlib, logging, subprocess
 from datetime import datetime, timezone
 
 import requests
@@ -88,6 +88,20 @@ def clean_text(text):
     return re.sub(r"\n{3,}", "\n\n", "\n".join(out)).strip()
 
 
+def extract_media(m):
+    """Возвращает (image_url, video_url) для сообщения t.me/s."""
+    image = video = None
+    ph = m.select_one(".tgme_widget_message_photo_wrap") or m.select_one(".tgme_widget_message_video_thumb")
+    if ph:
+        mm = re.search(r"url\('([^']+)'\)", ph.get("style", ""))
+        if mm:
+            image = mm.group(1)
+    v = m.select_one("video")
+    if v and v.get("src"):
+        video = v["src"]
+    return image, video
+
+
 def parse_channel(src):
     r = requests.get(f"https://t.me/s/{src['channel']}", headers=UA, timeout=30)
     r.raise_for_status()
@@ -106,15 +120,10 @@ def parse_channel(src):
         text = clean_text(t.get_text())
         if len(text) < 40:
             continue
-        image = None
-        ph = m.select_one(".tgme_widget_message_photo_wrap")
-        if ph:
-            mm = re.search(r"url\('([^']+)'\)", ph.get("style", ""))
-            if mm:
-                image = mm.group(1)
+        image, video = extract_media(m)
         pid = int(post.split("/")[-1]) if post.split("/")[-1].isdigit() else 0
         items.append({"source": src["name"], "link": f"https://t.me/{post}",
-                      "text": text[:1500], "image": image, "id": pid,
+                      "text": text[:1500], "image": image, "video": video, "id": pid,
                       "hash": content_hash(text)})
     return items
 
@@ -170,27 +179,78 @@ def build_final_text(body):
     return f"{body}\n\n{sig}"
 
 
-def send_to_telegram(text, image):
-    api = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
+def download(url, path, limit=45 * 1024 * 1024):
     try:
-        if image and len(text) <= 1024:
-            r = requests.post(f"{api}/sendPhoto", data={
-                "chat_id": TELEGRAM_CHAT_ID, "photo": image, "caption": text,
-                "parse_mode": "Markdown"}, timeout=30)
-            if r.ok:
-                return True
-            log.warning(f"sendPhoto не удался: {r.text[:200]}")
-        r = requests.post(f"{api}/sendMessage", data={
-            "chat_id": TELEGRAM_CHAT_ID, "text": text, "parse_mode": "Markdown",
-            "disable_web_page_preview": True}, timeout=30)
+        with requests.get(url, headers=UA, stream=True, timeout=60) as r:
+            r.raise_for_status()
+            size = 0
+            with open(path, "wb") as f:
+                for chunk in r.iter_content(1024 * 256):
+                    size += len(chunk)
+                    if size > limit:
+                        log.warning("Файл слишком большой, пропускаю медиа")
+                        return False
+                    f.write(chunk)
+        return size > 0
+    except Exception as e:
+        log.warning(f"Не удалось скачать {url[:60]}: {e}")
+        return False
+
+
+def to_mp4(src, dst):
+    try:
+        r = subprocess.run(["ffmpeg", "-y", "-i", src, "-c:v", "libx264", "-preset", "veryfast",
+                            "-pix_fmt", "yuv420p", "-c:a", "aac", "-movflags", "+faststart",
+                            "-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2", dst],
+                           capture_output=True, timeout=600)
+        return r.returncode == 0 and os.path.getsize(dst) < 49 * 1024 * 1024
+    except Exception as e:
+        log.warning(f"ffmpeg: {e}")
+        return False
+
+
+def tg_call(method, data, files=None):
+    api = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/{method}"
+    for parse in ("Markdown", None):
+        d = dict(data)
+        if parse:
+            d["parse_mode"] = parse
+        if files:
+            for f in files.values():
+                f.seek(0)
+        r = requests.post(api, data=d, files=files, timeout=300)
         if r.ok:
             return True
-        r = requests.post(f"{api}/sendMessage", data={
-            "chat_id": TELEGRAM_CHAT_ID, "text": text,
-            "disable_web_page_preview": True}, timeout=30)
-        if not r.ok:
-            log.error(f"sendMessage: {r.text[:300]}")
-        return r.ok
+        log.warning(f"{method} ({parse}): {r.text[:200]}")
+        if "parse" not in r.text.lower():
+            break
+    return False
+
+
+def send_to_telegram(text, image=None, video=None):
+    chat = {"chat_id": TELEGRAM_CHAT_ID}
+    caption = text if len(text) <= 1024 else None
+    sent_media = False
+    try:
+        if video:
+            if download(video, "/tmp/in_video") and to_mp4("/tmp/in_video", "/tmp/out_video.mp4"):
+                with open("/tmp/out_video.mp4", "rb") as f:
+                    d = dict(chat, supports_streaming="true")
+                    if caption:
+                        d["caption"] = caption
+                    sent_media = tg_call("sendVideo", d, {"video": f})
+        if not sent_media and image:
+            if download(image, "/tmp/in_image", limit=9 * 1024 * 1024):
+                with open("/tmp/in_image", "rb") as f:
+                    d = dict(chat)
+                    if caption:
+                        d["caption"] = caption
+                    sent_media = tg_call("sendPhoto", d, {"photo": f})
+        if sent_media and caption:
+            return True
+        if sent_media:
+            return tg_call("sendMessage", dict(chat, text=text, disable_web_page_preview="true"))
+        return tg_call("sendMessage", dict(chat, text=text, disable_web_page_preview="true"))
     except Exception as e:
         log.error(f"Ошибка Telegram: {e}")
         return False
@@ -213,7 +273,7 @@ def main():
         if not body:
             state["seen_links"].append(it["link"]); state["seen_hashes"].append(it["hash"])
             continue
-        if send_to_telegram(build_final_text(body), it["image"]):
+        if send_to_telegram(build_final_text(body), it["image"], it.get("video")):
             state["seen_links"].append(it["link"]); state["seen_hashes"].append(it["hash"])
             posted += 1
             schedule_next_post(state)
