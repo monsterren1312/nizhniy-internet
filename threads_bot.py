@@ -157,6 +157,15 @@ def main():
     cleanup_media()
     cands = bot.fetch_candidates(state)  # использует seen_* из нашего состояния
     log.info(f"Кандидатов: {len(cands)}")
+    if not state.get("initialized"):
+        # первый запуск: всё, что уже есть в каналах-источниках, считаем старым и не постим
+        for it in cands:
+            state["seen_links"].append(it["link"]); state["seen_hashes"].append(it["hash"])
+        state["initialized"] = True
+        save_state(state)
+        git_push("Threads: skip existing posts", STATE_FILE)
+        log.info(f"Пропущено старых постов: {len(cands)}. Дальше публикуются только новые.")
+        return
     for it in cands[:5]:
         body = rewrite_for_threads(it["text"], it["source"])
         state["seen_links"].append(it["link"]); state["seen_hashes"].append(it["hash"])
