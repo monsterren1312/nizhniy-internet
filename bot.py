@@ -291,7 +291,7 @@ def tg_call(method, data, files=None):
     return False
 
 
-def send_to_telegram(text, image=None, video=None, info=None):
+def send_to_telegram(text, image=None, video=None, info=None, link=None):
     """Возвращает None при ошибке, "ok" если всё ушло, "no_video" если видео пришлось пропустить."""
     global FIRST_POST_ID
     FIRST_POST_ID = None
@@ -301,6 +301,14 @@ def send_to_telegram(text, image=None, video=None, info=None):
     sent_media = False
     video_missing = bool(info.get("has_video"))
     too_long = (info.get("duration") or 0) > MAX_VIDEO_SECONDS
+    if video_missing and (not video or too_long) and link:
+        # длинное/недоступное видео: публикуем через второй аккаунт Telegram, если он подключён
+        import userbot
+        if userbot.enabled():
+            mid = userbot.post_video(link, text, TELEGRAM_CHAT_ID)
+            if mid:
+                FIRST_POST_ID = mid
+                return "ok"
     try:
         if video and not too_long:
             if download(video, "/tmp/in_video") and to_mp4("/tmp/in_video", "/tmp/out_video.mp4"):
@@ -371,7 +379,7 @@ def main():
             state["seen_links"].append(it["link"]); state["seen_hashes"].append(it["hash"])
             continue
         final = build_final_text(body)
-        res = send_to_telegram(final, it["image"], it.get("video"), it.get("info"))
+        res = send_to_telegram(final, it["image"], it.get("video"), it.get("info"), it["link"])
         if res:
             if res == "no_video":
                 notify_owner(it, final)
