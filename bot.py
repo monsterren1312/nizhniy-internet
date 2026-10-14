@@ -19,7 +19,7 @@ MAX_INTERVAL_MINUTES = int(os.environ.get("MAX_INTERVAL_MINUTES", "120"))
 STATE_FILE = os.environ.get("STATE_FILE", "state/seen.json")
 CHANNEL_SIGNATURE = os.environ.get("CHANNEL_SIGNATURE", "🎮 GTA 6 Новости")
 CHANNEL_URL = os.environ.get("CHANNEL_URL", "")
-OWNER_ID = os.environ.get("TELEGRAM_OWNER_ID", "546244209")
+OWNER_IDS = [x.strip() for x in os.environ.get("TELEGRAM_OWNER_ID", "546244209,7985229327").split(",") if x.strip()]
 MAX_VIDEO_SECONDS = int(os.environ.get("MAX_VIDEO_SECONDS", "90"))
 
 SOURCES = [
@@ -281,14 +281,15 @@ def notify_owner(it, text):
            f"Оригинал с видео: {it['link']}"
            + (f"\nДлительность: {dur} сек" if dur else "")
            + "\n\nГотовый текст:\n\n" + text)
-    try:
-        r = requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
-                          data={"chat_id": OWNER_ID, "text": msg[:4000],
-                                "disable_web_page_preview": "true"}, timeout=30)
-        if not r.ok:
-            log.warning(f"Уведомление владельцу не отправлено: {r.text[:200]}")
-    except Exception as e:
-        log.warning(f"Уведомление владельцу: {e}")
+    for owner in OWNER_IDS:
+        try:
+            r = requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
+                              data={"chat_id": owner, "text": msg[:4000],
+                                    "disable_web_page_preview": "true"}, timeout=30)
+            if not r.ok:
+                log.warning(f"Уведомление для {owner} не отправлено: {r.text[:200]}")
+        except Exception as e:
+            log.warning(f"Уведомление для {owner}: {e}")
 
 
 def main():
