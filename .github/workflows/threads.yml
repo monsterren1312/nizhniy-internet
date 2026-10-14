@@ -1,7 +1,11 @@
 name: Threads Автопостер
 
 on:
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      force_latest:
+        description: "force latest post (true/false)"
+        default: "false"
 
 permissions:
   contents: write
@@ -20,7 +24,8 @@ jobs:
         with:
           python-version: "3.11"
       - run: pip install -r requirements.txt
-      - run: sudo apt-get update && sudo apt-get install -y ffmpeg
+      - name: Install ffmpeg
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
       - name: Run Threads bot
         env:
           THREADS_ACCESS_TOKEN: ${{ secrets.THREADS_ACCESS_TOKEN }}
@@ -31,4 +36,5 @@ jobs:
           CHANNEL_URL: ${{ secrets.CHANNEL_URL }}
           THREADS_STATE_FILE: state/threads_seen.json
           STATE_FILE: state/threads_seen.json
+          THREADS_FORCE_LATEST: ${{ github.event.inputs.force_latest }}
         run: python threads_bot.py
