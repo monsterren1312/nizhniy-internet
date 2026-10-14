@@ -180,19 +180,21 @@ def main():
         has_video = info.get("has_video")
         long_video = (info.get("duration") or 0) > MAX_VIDEO_SECONDS
         text = f"{body}\n\n{PROFILE_NOTE}"[:500]
+        text_tg = f"{body}\n\nВидео смотрите в нашем Telegram-канале @newnewsgta6. {PROFILE_NOTE}"[:500]
         ok = False
         video_missing = bool(has_video)
         if it.get("video") and not long_video:
             url = host_video(it["video"], it["link"].rsplit("/", 1)[-1])
             if url and publish(text, "VIDEO", url):
                 ok, video_missing = True, False
+        fb_text = text_tg if video_missing else text
         if not ok and it.get("image"):
-            ok = publish(text, "IMAGE", it["image"])
+            ok = publish(fb_text, "IMAGE", it["image"])
         if not ok:
-            ok = publish(text, "TEXT")
+            ok = publish(fb_text, "TEXT")
         if ok:
             if video_missing:
-                text_for_owner = text + "\n\n(Threads: видео нужно добавить вручную)"
+                text_for_owner = fb_text + "\n\n(Threads: видео не прикреплено, в тексте отсылка на Telegram)"
                 bot.notify_owner(it, text_for_owner)
             delay = random.uniform(MIN_INTERVAL, MAX_INTERVAL)
             state["next_post_not_before"] = datetime.now(timezone.utc).timestamp() + delay * 60
