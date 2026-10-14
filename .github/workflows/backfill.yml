@@ -9,6 +9,9 @@ on:
       days:
         description: "За сколько дней"
         default: "30"
+      pause_sec:
+        description: "Пауза между постами, сек"
+        default: "240"
 
 permissions:
   contents: write
@@ -31,4 +34,5 @@ jobs:
           CHANNEL_URL: ${{ secrets.CHANNEL_URL }}
           BACKFILL_MAX_POSTS: ${{ inputs.max_posts }}
           BACKFILL_DAYS: ${{ inputs.days }}
+          BACKFILL_PAUSE_SEC: ${{ inputs.pause_sec }}
         run: python backfill.py
