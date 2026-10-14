@@ -1,0 +1,20 @@
+name: Тест userbot
+on:
+  workflow_dispatch: {}
+jobs:
+  t:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install telethon
+      - name: Test
+        env:
+          TG_API_ID: ${{ secrets.TG_API_ID }}
+          TG_API_HASH: ${{ secrets.TG_API_HASH }}
+          TG_SESSION: ${{ secrets.TG_SESSION }}
+        run: |
+          python -c "import logging;logging.basicConfig(level=logging.INFO);import userbot;print('RESULT',userbot.post_video('https://t.me/mir_gta6/311','*Тест* userbot','me'))"
