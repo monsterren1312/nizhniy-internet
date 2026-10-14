@@ -23,7 +23,6 @@ OWNER_IDS = [x.strip() for x in os.environ.get("TELEGRAM_OWNER_ID", "546244209,7
 MAX_VIDEO_SECONDS = int(os.environ.get("MAX_VIDEO_SECONDS", "90"))
 
 SOURCES = [
-    {"name": "Мир GTA", "channel": "mir_gta6"},
     {"name": "GTA 6 Deluxe", "channel": "gta6deluxe"},
 ]
 
