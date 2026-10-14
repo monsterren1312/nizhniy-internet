@@ -10,7 +10,7 @@ import bot  # переиспользуем парсинг каналов, фил
 log = logging.getLogger("gta6-threads")
 THREADS_API = "https://graph.threads.net/v1.0"
 TOKEN = os.environ["THREADS_ACCESS_TOKEN"]
-USER_ID = os.environ["THREADS_USER_ID"]
+USER_ID = os.environ.get("THREADS_USER_ID") or "me"
 STATE_FILE = os.environ.get("THREADS_STATE_FILE", "state/threads_seen.json")
 MIN_INTERVAL = int(os.environ.get("THREADS_MIN_INTERVAL", "90"))
 MAX_INTERVAL = int(os.environ.get("THREADS_MAX_INTERVAL", "180"))
