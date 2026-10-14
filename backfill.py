@@ -107,6 +107,10 @@ def main():
     for it in uniq:
         if posted >= MAX_POSTS:
             break
+        if bot.is_similar(it["text"], state.get("recent_texts", [])):
+            log.info(f"Дубль по смыслу, пропускаю: {it['text'][:50]}")
+            state["seen_links"].append(it["link"]); state["seen_hashes"].append(it["hash"])
+            continue
         body = bot.rewrite(it["text"], it["source"])
         state["seen_links"].append(it["link"]); state["seen_hashes"].append(it["hash"])
         if not body:
@@ -117,6 +121,7 @@ def main():
             if res == "no_video":
                 bot.notify_owner(it, final)
             posted += 1
+            bot.remember_text(state, it["text"])
             log.info(f"Опубликован {posted}: {it['date'].date()} {it['text'][:50]}")
             bot.save_state(state)
             git_push_state(f"Backfill {posted}")
