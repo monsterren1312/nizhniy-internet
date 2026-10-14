@@ -74,6 +74,30 @@ def content_hash(text):
     return hashlib.sha256(" ".join(n.split())[:400].encode("utf-8")).hexdigest()
 
 
+def _words(text):
+    n = "".join(c if (c.isalnum() or c.isspace()) else " " for c in text.lower())
+    return {w[:5] for w in n.split() if len(w) > 3 or w.isdigit()}
+
+
+def is_similar(text, recent, threshold=0.4):
+    """Та же новость из другого канала, но другими словами."""
+    a = _words(text)
+    if len(a) < 4:
+        return False
+    for r in recent:
+        b = _words(r)
+        if not b:
+            continue
+        if len(a & b) / min(len(a), len(b)) >= threshold + 0.2 or len(a & b) / len(a | b) >= threshold:
+            return True
+    return False
+
+
+def remember_text(state, text):
+    state.setdefault("recent_texts", []).append(text[:500])
+    state["recent_texts"] = state["recent_texts"][-60:]
+
+
 def clean_text(text):
     out = []
     for line in text.splitlines():
@@ -154,6 +178,9 @@ def fetch_candidates(state):
                 continue
             low = it["text"].lower()
             if not any(k in low for k in KEYWORDS):
+                continue
+            if is_similar(it["text"], state.get("recent_texts", [])):
+                state["seen_links"].append(it["link"]); state["seen_hashes"].append(it["hash"])
                 continue
             cands.append(it)
     cands.sort(key=lambda c: c["id"], reverse=True)
@@ -315,6 +342,7 @@ def main():
             if res == "no_video":
                 notify_owner(it, final)
             state["seen_links"].append(it["link"]); state["seen_hashes"].append(it["hash"])
+            remember_text(state, it["text"])
             posted += 1
             schedule_next_post(state)
         else:
