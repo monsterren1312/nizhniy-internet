@@ -248,6 +248,24 @@ def to_mp4(src, dst):
         return False
 
 
+FIRST_POST_ID = None  # id первого сообщения последнего поста в канале
+
+
+def post_url():
+    """Ссылка на последний опубликованный пост в канале (для ручного добавления видео)."""
+    if FIRST_POST_ID is None:
+        return None
+    chat = str(TELEGRAM_CHAT_ID)
+    if chat.startswith("@"):
+        return f"https://t.me/{chat[1:]}/{FIRST_POST_ID}"
+    base = (CHANNEL_URL or "").rstrip("/")
+    if base.startswith("http") and "/+" not in base and "joinchat" not in base:
+        return f"{base}/{FIRST_POST_ID}"
+    if chat.startswith("-100"):
+        return f"https://t.me/c/{chat[4:]}/{FIRST_POST_ID}"
+    return None
+
+
 def tg_call(method, data, files=None):
     api = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/{method}"
     for parse in ("Markdown", None):
@@ -259,6 +277,13 @@ def tg_call(method, data, files=None):
                 f.seek(0)
         r = requests.post(api, data=d, files=files, timeout=300)
         if r.ok:
+            global FIRST_POST_ID
+            try:
+                mid = r.json().get("result", {}).get("message_id")
+                if mid and FIRST_POST_ID is None and str(data.get("chat_id")) == str(TELEGRAM_CHAT_ID):
+                    FIRST_POST_ID = mid
+            except Exception:
+                pass
             return True
         log.warning(f"{method} ({parse}): {r.text[:200]}")
         if "parse" not in r.text.lower():
@@ -268,6 +293,8 @@ def tg_call(method, data, files=None):
 
 def send_to_telegram(text, image=None, video=None, info=None):
     """Возвращает None при ошибке, "ok" если всё ушло, "no_video" если видео пришлось пропустить."""
+    global FIRST_POST_ID
+    FIRST_POST_ID = None
     info = info or {}
     chat = {"chat_id": TELEGRAM_CHAT_ID}
     caption = text if len(text) <= 1024 else None
@@ -300,23 +327,30 @@ def send_to_telegram(text, image=None, video=None, info=None):
         return None
 
 
+def _tg_owner(method, owner, **data):
+    try:
+        r = requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/{method}",
+                          data=dict(data, chat_id=owner), timeout=60)
+        if not r.ok:
+            log.warning(f"{method} для {owner}: {r.text[:200]}")
+        return r.ok
+    except Exception as e:
+        log.warning(f"{method} для {owner}: {e}")
+        return False
+
+
 def notify_owner(it, text):
-    """Личное сообщение владельцу: к посту нужно вручную добавить видео."""
+    """ЛС владельцу: ссылка на оригинал с видео, ссылка на наш пост и отдельным сообщением готовый текст."""
     dur = it.get("info", {}).get("duration")
-    msg = ("🎬 Нужно вручную добавить видео к посту\n\n"
-           f"Источник: {it['source']}\n"
-           f"Оригинал с видео: {it['link']}"
-           + (f"\nДлительность: {dur} сек" if dur else "")
-           + "\n\nГотовый текст:\n\n" + text)
+    pu = post_url()
+    info = ("🎬 К этому посту нужно вручную добавить видео.\n\n"
+            f"1) Откройте оригинал с видео ({it['source']}): {it['link']}\n"
+            "2) Перешлите его в канал (скрыв отправителя) и вставьте подписью текст из следующего сообщения."
+            + (f"\n3) Наш пост без видео можно удалить: {pu}" if pu else "")
+            + (f"\n\nДлительность видео: {dur} сек" if dur else ""))
     for owner in OWNER_IDS:
-        try:
-            r = requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
-                              data={"chat_id": owner, "text": msg[:4000],
-                                    "disable_web_page_preview": "true"}, timeout=30)
-            if not r.ok:
-                log.warning(f"Уведомление для {owner} не отправлено: {r.text[:200]}")
-        except Exception as e:
-            log.warning(f"Уведомление для {owner}: {e}")
+        _tg_owner("sendMessage", owner, text=info[:4000])
+        _tg_owner("sendMessage", owner, text=text[:4000], disable_web_page_preview="true")
 
 
 def main():
