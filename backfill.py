@@ -37,9 +37,9 @@ def parse_page(html, src):
         text = bot.clean_text(t.get_text())
         if len(text) < 40:
             continue
-        image, video = bot.extract_media(m)
+        image, video, info = bot.extract_media(m)
         out.append({"source": src["name"], "link": f"https://t.me/{post}", "text": text[:1500],
-                    "image": image, "video": video, "date": date, "hash": bot.content_hash(text)})
+                    "image": image, "video": video, "info": info, "date": date, "hash": bot.content_hash(text)})
     return out, ids
 
 
@@ -111,7 +111,11 @@ def main():
         state["seen_links"].append(it["link"]); state["seen_hashes"].append(it["hash"])
         if not body:
             continue
-        if bot.send_to_telegram(bot.build_final_text(body), it["image"], it.get("video")):
+        final = bot.build_final_text(body)
+        res = bot.send_to_telegram(final, it["image"], it.get("video"), it.get("info"))
+        if res:
+            if res == "no_video":
+                bot.notify_owner(it, final)
             posted += 1
             log.info(f"Опубликован {posted}: {it['date'].date()} {it['text'][:50]}")
             bot.save_state(state)
