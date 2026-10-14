@@ -301,8 +301,8 @@ def send_to_telegram(text, image=None, video=None, info=None, link=None):
     sent_media = False
     video_missing = bool(info.get("has_video"))
     too_long = (info.get("duration") or 0) > MAX_VIDEO_SECONDS
-    if video_missing and (not video or too_long) and link:
-        # длинное/недоступное видео: публикуем через второй аккаунт Telegram, если он подключён
+    if link and (image or video or video_missing):
+        # медиа (альбом, длинное видео) публикуем через второй аккаунт Telegram, если он подключён
         import userbot
         if userbot.enabled():
             mid = userbot.post_video(link, text, TELEGRAM_CHAT_ID)
