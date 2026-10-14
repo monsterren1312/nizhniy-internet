@@ -19,6 +19,8 @@ MAX_INTERVAL_MINUTES = int(os.environ.get("MAX_INTERVAL_MINUTES", "120"))
 STATE_FILE = os.environ.get("STATE_FILE", "state/seen.json")
 CHANNEL_SIGNATURE = os.environ.get("CHANNEL_SIGNATURE", "🎮 GTA 6 Новости")
 CHANNEL_URL = os.environ.get("CHANNEL_URL", "")
+OWNER_ID = os.environ.get("TELEGRAM_OWNER_ID", "546244209")
+MAX_VIDEO_SECONDS = int(os.environ.get("MAX_VIDEO_SECONDS", "90"))
 
 SOURCES = [
     {"name": "Мир GTA", "channel": "mir_gta6"},
@@ -89,7 +91,8 @@ def clean_text(text):
 
 
 def extract_media(m):
-    """Возвращает (image_url, video_url) для сообщения t.me/s."""
+    """Возвращает (image_url, video_url, info) для сообщения t.me/s.
+    info = {"has_video": bool, "duration": секунды или None}"""
     image = video = None
     ph = m.select_one(".tgme_widget_message_photo_wrap") or m.select_one(".tgme_widget_message_video_thumb")
     if ph:
@@ -99,7 +102,16 @@ def extract_media(m):
     v = m.select_one("video")
     if v and v.get("src"):
         video = v["src"]
-    return image, video
+    has_video = bool(v or m.select_one(".tgme_widget_message_video_player, .tgme_widget_message_roundvideo_player"))
+    duration = None
+    d = m.select_one(".message_video_duration, .tgme_widget_message_video_duration")
+    if d:
+        parts = [p for p in d.get_text().strip().split(":") if p.isdigit()]
+        if parts:
+            duration = 0
+            for p in parts:
+                duration = duration * 60 + int(p)
+    return image, video, {"has_video": has_video, "duration": duration}
 
 
 def parse_channel(src):
@@ -120,10 +132,10 @@ def parse_channel(src):
         text = clean_text(t.get_text())
         if len(text) < 40:
             continue
-        image, video = extract_media(m)
+        image, video, info = extract_media(m)
         pid = int(post.split("/")[-1]) if post.split("/")[-1].isdigit() else 0
         items.append({"source": src["name"], "link": f"https://t.me/{post}",
-                      "text": text[:1500], "image": image, "video": video, "id": pid,
+                      "text": text[:1500], "image": image, "video": video, "info": info, "id": pid,
                       "hash": content_hash(text)})
     return items
 
@@ -227,18 +239,24 @@ def tg_call(method, data, files=None):
     return False
 
 
-def send_to_telegram(text, image=None, video=None):
+def send_to_telegram(text, image=None, video=None, info=None):
+    """Возвращает None при ошибке, "ok" если всё ушло, "no_video" если видео пришлось пропустить."""
+    info = info or {}
     chat = {"chat_id": TELEGRAM_CHAT_ID}
     caption = text if len(text) <= 1024 else None
     sent_media = False
+    video_missing = bool(info.get("has_video"))
+    too_long = (info.get("duration") or 0) > MAX_VIDEO_SECONDS
     try:
-        if video:
+        if video and not too_long:
             if download(video, "/tmp/in_video") and to_mp4("/tmp/in_video", "/tmp/out_video.mp4"):
                 with open("/tmp/out_video.mp4", "rb") as f:
                     d = dict(chat, supports_streaming="true")
                     if caption:
                         d["caption"] = caption
                     sent_media = tg_call("sendVideo", d, {"video": f})
+                    if sent_media:
+                        video_missing = False
         if not sent_media and image:
             if download(image, "/tmp/in_image", limit=9 * 1024 * 1024):
                 with open("/tmp/in_image", "rb") as f:
@@ -246,14 +264,31 @@ def send_to_telegram(text, image=None, video=None):
                     if caption:
                         d["caption"] = caption
                     sent_media = tg_call("sendPhoto", d, {"photo": f})
-        if sent_media and caption:
-            return True
-        if sent_media:
-            return tg_call("sendMessage", dict(chat, text=text, disable_web_page_preview="true"))
-        return tg_call("sendMessage", dict(chat, text=text, disable_web_page_preview="true"))
+        if not (sent_media and caption):
+            if not tg_call("sendMessage", dict(chat, text=text, disable_web_page_preview="true")):
+                return None
+        return "no_video" if video_missing else "ok"
     except Exception as e:
         log.error(f"Ошибка Telegram: {e}")
-        return False
+        return None
+
+
+def notify_owner(it, text):
+    """Личное сообщение владельцу: к посту нужно вручную добавить видео."""
+    dur = it.get("info", {}).get("duration")
+    msg = ("🎬 Нужно вручную добавить видео к посту\n\n"
+           f"Источник: {it['source']}\n"
+           f"Оригинал с видео: {it['link']}"
+           + (f"\nДлительность: {dur} сек" if dur else "")
+           + "\n\nГотовый текст:\n\n" + text)
+    try:
+        r = requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
+                          data={"chat_id": OWNER_ID, "text": msg[:4000],
+                                "disable_web_page_preview": "true"}, timeout=30)
+        if not r.ok:
+            log.warning(f"Уведомление владельцу не отправлено: {r.text[:200]}")
+    except Exception as e:
+        log.warning(f"Уведомление владельцу: {e}")
 
 
 def main():
@@ -273,7 +308,11 @@ def main():
         if not body:
             state["seen_links"].append(it["link"]); state["seen_hashes"].append(it["hash"])
             continue
-        if send_to_telegram(build_final_text(body), it["image"], it.get("video")):
+        final = build_final_text(body)
+        res = send_to_telegram(final, it["image"], it.get("video"), it.get("info"))
+        if res:
+            if res == "no_video":
+                notify_owner(it, final)
             state["seen_links"].append(it["link"]); state["seen_hashes"].append(it["hash"])
             posted += 1
             schedule_next_post(state)
