@@ -155,7 +155,12 @@ def main():
         log.info("Ещё не время для следующего поста")
         return
     cleanup_media()
-    cands = bot.fetch_candidates(state)  # использует seen_* из нашего состояния
+    force = os.environ.get("THREADS_FORCE_LATEST") == "true"
+    if force:
+        cands = bot.fetch_candidates({"seen_links": [], "seen_hashes": [], "recent_texts": []})[:1]
+        state["initialized"] = True
+    else:
+        cands = bot.fetch_candidates(state)  # использует seen_* из нашего состояния
     log.info(f"Кандидатов: {len(cands)}")
     if not state.get("initialized"):
         # первый запуск: всё, что уже есть в каналах-источниках, считаем старым и не постим
