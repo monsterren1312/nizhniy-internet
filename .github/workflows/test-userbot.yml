@@ -1,6 +1,10 @@
 name: Тест userbot
 on:
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      link:
+        description: "Ссылка на пост"
+        default: "https://t.me/gta6deluxe/1526"
 jobs:
   t:
     runs-on: ubuntu-latest
@@ -16,5 +20,6 @@ jobs:
           TG_API_ID: ${{ secrets.TG_API_ID }}
           TG_API_HASH: ${{ secrets.TG_API_HASH }}
           TG_SESSION: ${{ secrets.TG_SESSION }}
+          LINK: ${{ github.event.inputs.link }}
         run: |
-          python -c "import logging;logging.basicConfig(level=logging.INFO);import userbot;print('RESULT',userbot.post_video('https://t.me/mir_gta6/311','*Тест* userbot','me'))"
+          python -c "import os,logging;logging.basicConfig(level=logging.INFO);import userbot;print('RESULT',userbot.post_video(os.environ['LINK'],'*Тест* userbot','me'))"
