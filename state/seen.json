@@ -1,13 +1,5 @@
 {
-  "seen_hashes": [
-    "c4eda808f5fc7547a54b1859caf0ce25e46c739c68393fe4746a0f61bf7eb982",
-    "09c30a6c870d94c528ab22df5315e0aac64db368cbb963b2911fad238e1266a9",
-    "92934f1624093d910dd780c80883f2ad0833461ba57b448b9160ada1c1b12efe"
-  ],
-  "seen_links": [
-    "https://t.me/gta6deluxe/1471",
-    "https://t.me/gta6deluxe/1472",
-    "https://t.me/gta6deluxe/1475"
-  ],
-  "next_post_not_before": 1792007143.0878837
+  "seen_hashes": [],
+  "seen_links": [],
+  "next_post_not_before": null
 }
