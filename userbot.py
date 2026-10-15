@@ -55,3 +55,44 @@ def post_video(link, caption, target):
     except Exception as e:
         log.warning(f"Userbot не смог опубликовать {link}: {e}")
         return None
+
+
+def copy_comment_media(link, target, our_id):
+    """Берёт первое медиа (лучше от админа) из комментариев поста-источника и кладёт
+    его комментарием под наш пост, без текста. True = готово, False = пока нет, None = ошибка."""
+    m = re.search(r"t\.me/([^/]+)/(\d+)", link or "")
+    if not (enabled() and m and our_id):
+        return None
+    try:
+        from telethon.sync import TelegramClient
+        from telethon.sessions import StringSession
+        from telethon.tl.types import MessageMediaWebPage
+        chan, pid = m.group(1), int(m.group(2))
+        with TelegramClient(StringSession(SESSION), int(API_ID), API_HASH) as client:
+            comments = [x for x in client.get_messages(chan, reply_to=pid, limit=40)
+                        if x and x.media and not isinstance(x.media, MessageMediaWebPage)]
+            if not comments:
+                return False
+            comments.sort(key=lambda x: x.id)
+            pick = None
+            for x in comments:
+                try:
+                    if x.sender_id and client.get_permissions(x.chat_id, x.sender_id).is_admin:
+                        pick = x
+                        break
+                except Exception:
+                    pass
+            pick = pick or comments[0]
+            media = [pick.media]
+            gid = getattr(pick, "grouped_id", None)
+            if gid:
+                group = [x for x in comments if getattr(x, "grouped_id", None) == gid]
+                if group:
+                    media = [x.media for x in group]
+            dest = int(target) if re.fullmatch(r"-?\d+", str(target)) else target
+            client.send_file(dest, media if len(media) > 1 else media[0],
+                             comment_to=int(our_id))
+            return True
+    except Exception as e:
+        log.warning(f"Не удалось скопировать медиа из комментариев {link}: {e}")
+        return None
