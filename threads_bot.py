@@ -151,13 +151,16 @@ def main():
     log.info("Запуск GTA 6 Threads бота")
     state = load_state()
     nb = state.get("next_post_not_before")
-    if nb and datetime.now(timezone.utc).timestamp() < nb:
+    fv = os.environ.get("THREADS_FORCE_LATEST", "")
+    force_n = int(fv) if fv.isdigit() else 0
+    if nb and not (fv == "true" or force_n) and datetime.now(timezone.utc).timestamp() < nb:
         log.info("Ещё не время для следующего поста")
         return
     cleanup_media()
-    force = os.environ.get("THREADS_FORCE_LATEST") == "true"
+    force = fv == "true" or force_n > 0
     if force:
-        cands = bot.fetch_candidates({"seen_links": [], "seen_hashes": [], "recent_texts": []})[:1]
+        allc = bot.fetch_candidates({"seen_links": [], "seen_hashes": [], "recent_texts": []})
+        cands = allc[1:1 + force_n] if force_n else allc[:1]
         state["initialized"] = True
     else:
         cands = bot.fetch_candidates(state)  # использует seen_* из нашего состояния
@@ -199,7 +202,10 @@ def main():
             delay = random.uniform(MIN_INTERVAL, MAX_INTERVAL)
             state["next_post_not_before"] = datetime.now(timezone.utc).timestamp() + delay * 60
             log.info(f"Опубликовано. Следующий пост через {delay:.0f} мин")
-            break
+            if not force_n:
+                break
+            time.sleep(60)
+            continue
         log.error("Публикация не удалась, пробую следующий пост")
     save_state(state)
     git_push("Update threads state", STATE_FILE)
