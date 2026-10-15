@@ -74,15 +74,21 @@ def copy_comment_media(link, target, our_id):
             if not comments:
                 return False
             comments.sort(key=lambda x: x.id)
-            pick = None
-            for x in comments:
-                try:
-                    if x.sender_id and client.get_permissions(x.chat_id, x.sender_id).is_admin:
-                        pick = x
-                        break
-                except Exception:
-                    pass
-            pick = pick or comments[0]
+            # берём только медиа от админов источника или от самого канала, посторонних игнорируем
+            from telethon.tl.types import ChannelParticipantsAdmins
+            admins = set()
+            try:
+                admins = {u.id for u in client.get_participants(comments[0].chat_id, filter=ChannelParticipantsAdmins)}
+            except Exception as e:
+                log.warning(f"Не удалось получить админов обсуждения: {e}")
+            try:
+                admins.add(client.get_entity(chan).id)
+            except Exception:
+                pass
+            comments = [x for x in comments if x.sender_id in admins]
+            if not comments:
+                return False
+            pick = comments[0]
             media = [pick.media]
             gid = getattr(pick, "grouped_id", None)
             if gid:
