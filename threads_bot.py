@@ -160,7 +160,8 @@ def main():
     force = fv == "true" or force_n > 0
     if force:
         allc = bot.fetch_candidates({"seen_links": [], "seen_hashes": [], "recent_texts": []})
-        cands = allc[1:1 + force_n] if force_n else allc[:1]
+        allc = [c for c in allc if c["link"] not in state["seen_links"]]
+        cands = allc[:force_n] if force_n else allc[:1]
         state["initialized"] = True
     else:
         cands = bot.fetch_candidates(state)  # использует seen_* из нашего состояния
