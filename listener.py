@@ -40,7 +40,7 @@ def run_bots():
 
 async def main():
     started = time.time()
-    client = TelegramClient(StringSession(os.environ["TG_SESSION"]), int(os.environ["TG_API_ID"]), os.environ["TG_API_HASH"])
+    client = TelegramClient(StringSession(os.environ["TG_SESSION"].strip()), int(os.environ["TG_API_ID"].strip()), os.environ["TG_API_HASH"].strip())
     await client.start()
     log.info(f"Слушаю канал {CHANNEL}")
     trigger = asyncio.Event()
