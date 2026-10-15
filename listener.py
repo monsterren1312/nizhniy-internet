@@ -10,8 +10,8 @@ log = logging.getLogger("listener")
 
 CHANNEL = os.environ.get("SOURCE_CHANNEL", "gta6deluxe")
 RUN_SECONDS = int(os.environ.get("LISTENER_SECONDS", str(5 * 3600 + 40 * 60)))
-POLL = int(os.environ.get("LISTENER_POLL", "900"))
-DEBOUNCE = 25
+POLL = int(os.environ.get("LISTENER_POLL", "300"))
+DEBOUNCE = int(os.environ.get("LISTENER_DELAY", "150"))
 
 
 def sh(*a, **kw):
