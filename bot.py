@@ -360,9 +360,29 @@ def notify_owner(it, text):
         _tg_owner("sendMessage", owner, text=text[:4000], disable_web_page_preview="true")
 
 
+def process_pending_comments(state):
+    """Медиа из комментариев источника дублируем первым комментарием под нашим постом."""
+    import userbot
+    if not userbot.enabled():
+        return
+    keep = []
+    now = time.time()
+    for p in state.get("pending_comments", []):
+        if now - p["ts"] > 24 * 3600:
+            continue
+        res = userbot.copy_comment_media(p["link"], TELEGRAM_CHAT_ID, p["our_id"])
+        if res is True:
+            log.info(f"Медиа из комментариев {p['link']} добавлено под наш пост")
+        else:
+            keep.append(p)
+    state["pending_comments"] = keep
+
+
 def main():
     log.info("Запуск GTA 6 бота")
     state = load_state()
+    process_pending_comments(state)
+    save_state(state)
     if is_too_early(state):
         log.info("Ещё не время для следующего поста")
         return
@@ -384,6 +404,9 @@ def main():
                 notify_owner(it, final)
             state["seen_links"].append(it["link"]); state["seen_hashes"].append(it["hash"])
             remember_text(state, it["text"])
+            if FIRST_POST_ID:
+                state.setdefault("pending_comments", []).append(
+                    {"link": it["link"], "our_id": FIRST_POST_ID, "ts": time.time()})
             posted += 1
             schedule_next_post(state)
         else:
